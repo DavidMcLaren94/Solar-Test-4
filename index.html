@@ -1,0 +1,124 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Interactive Solar Roof Drawing Tool (Google Maps with Vercel Proxy)</title>
+  <meta name="viewport" content="initial-scale=1.0, user-scalable=no">
+  <meta charset="utf-8">
+  <style>
+    html, body { height: 100%; margin: 0; padding: 0; }
+    #map { height: 90%; width: 100%; }
+    #searchBox { position: absolute; top: 10px; left: 10px; background: #fff; padding: 10px; z-index: 1000; }
+    #info { position: absolute; bottom: 20px; left: 10px; background: #fff; padding: 10px; border-radius: 5px; z-index: 1000; }
+  </style>
+</head>
+<body>
+<div id="searchBox">
+  <input type="text" id="postcode" placeholder="Enter postcode">
+  <button onclick="searchPostcode()">Search</button>
+</div>
+<div id="map"></div>
+<div id="info">
+  <button onclick="calculatePanels()">Calculate Panels & Solar Output</button>
+  <div id="results"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+<script>
+let map, drawingManager, roofPolygon;
+
+function initMap() {
+  map = new google.maps.Map(document.getElementById('map'), {
+    center: { lat: 51.5, lng: -0.1 },
+    zoom: 18,
+    mapTypeId: 'satellite'
+  });
+
+  drawingManager = new google.maps.drawing.DrawingManager({
+    drawingMode: google.maps.drawing.OverlayType.POLYGON,
+    drawingControl: true,
+    drawingControlOptions: {
+      position: google.maps.ControlPosition.TOP_CENTER,
+      drawingModes: ['polygon']
+    },
+    polygonOptions: { editable: true }
+  });
+  drawingManager.setMap(map);
+
+  google.maps.event.addListener(drawingManager, 'overlaycomplete', function(event) {
+    if (roofPolygon) roofPolygon.setMap(null);
+    roofPolygon = event.overlay;
+    drawingManager.setDrawingMode(null);
+  });
+}
+
+function searchPostcode() {
+  const postcode = document.getElementById('postcode').value;
+  if (!postcode) {
+    alert('Please enter a postcode.');
+    return;
+  }
+  const geocoder = new google.maps.Geocoder();
+  geocoder.geocode({ address: postcode }, (results, status) => {
+    if (status === 'OK') {
+      const location = results[0].geometry.location;
+      map.setCenter(location);
+      map.setZoom(20);
+    } else {
+      alert('Geocode was not successful: ' + status);
+    }
+  });
+}
+
+function calculatePanels() {
+  if (!roofPolygon) {
+    alert('Please draw your roof area first.');
+    return;
+  }
+
+  const path = roofPolygon.getPath().getArray().map(coord => [coord.lng(), coord.lat()]);
+  path.push(path[0]);
+  const turfPolygon = turf.polygon([path]);
+  console.log('Polygon data:', turfPolygon);
+
+  const area = turf.area(turfPolygon);
+  const panelArea = 1.134 * 1.764;
+  const maxPanels = Math.floor(area / panelArea);
+
+  const centroid = turf.centroid(turfPolygon).geometry.coordinates;
+  const lon = centroid[0];
+  const lat = centroid[1];
+  const systemSize = (maxPanels * 400) / 1000;
+
+  if (systemSize <= 0) {
+    alert('No panels could fit on this roof. Please adjust the shape.');
+    return;
+  }
+
+  console.log('Centroid:', lat, lon, 'System Size:', systemSize);
+
+  const url = `/api/pvgis?lat=${lat}&lon=${lon}&peakpower=${systemSize}`;
+  console.log('Calling:', url);
+
+  fetch(url)
+    .then(response => response.json())
+    .then(data => {
+      console.log('PVGIS API response:', data);
+      const annualGen = data.outputs.totals.fixed.EDY * systemSize;
+      document.getElementById('results').innerHTML = `
+        Panels Fit: ${maxPanels}<br>
+        System Size: ${systemSize.toFixed(1)} kWp<br>
+        Estimated Annual Generation: ${annualGen.toFixed(0)} kWh
+      `;
+    })
+    .catch(err => {
+      console.error('Error fetching solar data:', err);
+      alert('Error fetching solar data.');
+    });
+}
+
+window.initMap = initMap;
+</script>
+<script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAppVhgKsqxYeM3ckw3pWkTimTHgPFgAt4&callback=initMap&libraries=drawing,places"></script>
+</body>
+</html>
